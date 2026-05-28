@@ -1,0 +1,62 @@
+name: Sync fork with upstream
+
+on:
+  schedule:
+    - cron: '0 11 * * *'  # daily at 11:00 UTC (~6am ET / 3am PT)
+  workflow_dispatch:       # also runnable manually from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git as bot
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/pingwu/solo-unicorn.git
+          git fetch upstream main
+
+      - name: Skip if already in sync
+        id: check
+        run: |
+          # Fork main = upstream/main + 1 commit (this workflow). HEAD~1 should equal upstream/main.
+          PARENT=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
+          UPSTREAM=$(git rev-parse upstream/main)
+          if [ "$PARENT" = "$UPSTREAM" ]; then
+            echo "Already in sync with upstream/main — nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mirror upstream, preserving this workflow
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          # Stash our workflow file before the reset wipes it out
+          cp .github/workflows/sync-fork.yml /tmp/sync-fork.yml
+
+          # Force local main to match upstream/main exactly
+          git reset --hard upstream/main
+
+          # Re-apply our workflow file as a single preserve commit
+          mkdir -p .github/workflows
+          cp /tmp/sync-fork.yml .github/workflows/sync-fork.yml
+          git add .github/workflows/sync-fork.yml
+          git commit -m "chore: preserve fork sync workflow on top of upstream mirror"
+
+      - name: Force-push to fork
+        if: steps.check.outputs.skip == 'false'
+        run: git push origin main --force
